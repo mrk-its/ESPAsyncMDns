@@ -2,8 +2,7 @@
 #define MDNS_H
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <WiFiUdp.h>
+#include <ESPAsyncUDP.h>
 
 #define DEBUG_STATISTICS      // Record how many incoming packets fitted into data_buffer.
 //#define DEBUG_OUTPUT          // Send packet summaries to Serial.
@@ -133,6 +132,10 @@ class MDns {
 
   // Call this regularly to check for an incoming packet.
   bool loop();
+
+  void start();
+  void onPacket(AsyncUDPPacket &packet);
+
   // Deprecated. Use loop() instead.
   bool Check(){
     return loop();
@@ -176,9 +179,6 @@ class MDns {
   unsigned int PopulateName(const char* name_buffer);
   void PopulateAnswerResult(Answer* answer);
   
-  // Whether UDP socket has not yet been initialised. 
-  bool init;
-
   // Pointer to function that gets called for every incoming mDNS packet.
   void (*p_packet_function_)(const MDns*);
 

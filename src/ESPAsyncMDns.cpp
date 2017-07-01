@@ -1,12 +1,12 @@
 #include <Arduino.h>
-#include "mdns.h"
+#include "ESPAsyncMDns.h"
 
 
 namespace mdns {
 
 
 // A UDP instance to let us send and receive packets over UDP.
-WiFiUDP Udp;
+AsyncUDP udp;
 
 // Helper function to display formatted data.
 void PrintHex(const unsigned char data) {
@@ -16,105 +16,106 @@ void PrintHex(const unsigned char data) {
   Serial.print(" ");
 }
 
-bool MDns::loop() {
-  if (!init) {
-    init = true;
-    Serial.println("Initializing Multicast.");
-    Udp.beginMulticast(WiFi.localIP(), IPAddress(224, 0, 0, 251), MDNS_TARGET_PORT);
-  }
-  data_size = Udp.parsePacket();
-  if ( data_size > 12) {
-    if(data_size > largest_packet_seen){
-      largest_packet_seen = data_size;
-    }
-#ifdef DEBUG_STATISTICS
-    if(data_size > max_packet_size) {
-      buffer_size_fail++;
-      data_size = max_packet_size;
-    }
-    packet_count++;
-#endif
+void MDns::onPacket(AsyncUDPPacket &packet) {
+    data_size = packet.length();
 
-    // We've received a packet which is long enough to contain useful data so
-    // read the data from it.
-    Udp.read(data_buffer, data_size); // read the packet into the buffer
+    if(data_size > 12) {
+      if(data_size > largest_packet_seen){
+        largest_packet_seen = data_size;
+      }
+  #ifdef DEBUG_STATISTICS
+      if(data_size > max_packet_size) {
+        buffer_size_fail++;
+        data_size = max_packet_size;
+      }
+      packet_count++;
+  #endif
+      // We've received a packet which is long enough to contain useful data so
+      // read the data from it.
+      memcpy(data_buffer, packet.data(), data_size);
+      // Udp.read(data_buffer, data_size); // read the packet into the buffer
 
-    // data_buffer[0] and data_buffer[1] contain the Query ID field which is unused in mDNS.
+      // data_buffer[0] and data_buffer[1] contain the Query ID field which is unused in mDNS.
 
-    // data_buffer[2] and data_buffer[3] are DNS flags which are mostly unused in mDNS.
-    type = !(data_buffer[2] & 0b10000000);  // If it's not a query, it's an answer.
-    truncated = data_buffer[2] & 0b00000010;  // If it's truncated we can expect more data soon so we should wait for additional records before deciding whether to respond.
-    if (data_buffer[3] & 0b00001111) {
-      // Non zero Response code implies error.
-      return false;
-    }
+      // data_buffer[2] and data_buffer[3] are DNS flags which are mostly unused in mDNS.
+      type = !(data_buffer[2] & 0b10000000);  // If it's not a query, it's an answer.
+      truncated = data_buffer[2] & 0b00000010;  // If it's truncated we can expect more data soon so we should wait for additional records before deciding whether to respond.
+      if (data_buffer[3] & 0b00001111) {
+        // Non zero Response code implies error.
+        return;
+      }
 
-    // Number of incoming queries.
-    query_count = (data_buffer[4] << 8) + data_buffer[5];
+      // Number of incoming queries.
+      query_count = (data_buffer[4] << 8) + data_buffer[5];
 
-    // Number of incoming answers.
-    answer_count = (data_buffer[6] << 8) + data_buffer[7];
+      // Number of incoming answers.
+      answer_count = (data_buffer[6] << 8) + data_buffer[7];
 
-    // Number of incoming Name Server resource records.
-    ns_count = (data_buffer[8] << 8) + data_buffer[9];
+      // Number of incoming Name Server resource records.
+      ns_count = (data_buffer[8] << 8) + data_buffer[9];
 
-    // Number of incoming Additional resource records.
-    ar_count = (data_buffer[10] << 8) + data_buffer[11];
+      // Number of incoming Additional resource records.
+      ar_count = (data_buffer[10] << 8) + data_buffer[11];
 
-    if(p_packet_function_) {
-      // Since a callback function has been registered, execute it.
-      p_packet_function_(this);
-    }
+      if(p_packet_function_) {
+        // Since a callback function has been registered, execute it.
+        p_packet_function_(this);
+      }
 
-#ifdef DEBUG_OUTPUT
-    Display();
-#endif  // DEBUG_OUTPUT
+  #ifdef DEBUG_OUTPUT
+      Display();
+  #endif  // DEBUG_OUTPUT
 
-    // Start of Data section.
-    buffer_pointer = 12;
+      // Start of Data section.
+      buffer_pointer = 12;
 
-    for (unsigned int i_question = 0; i_question < query_count; i_question++) {
-      Query query;
-      Parse_Query(query);
-      if (query.valid) {
-        if (p_query_function_) {
-          // Since a callback function has been registered, execute it.
-          p_query_function_(&query);
+      for (unsigned int i_question = 0; i_question < query_count; i_question++) {
+        Query query;
+        Parse_Query(query);
+        if (query.valid) {
+          if (p_query_function_) {
+            // Since a callback function has been registered, execute it.
+            p_query_function_(&query);
+          }
         }
-      }
-      if(buffer_pointer >= data_size){
-        return false;
-      }
-#ifdef DEBUG_OUTPUT
-      query.Display();
-#endif  // DEBUG_OUTPUT
-    }
-
-    for (unsigned int i_answer = 0; i_answer < (answer_count + ns_count + ar_count); i_answer++) {
-      Answer answer;
-      Parse_Answer(answer);
-      if (answer.valid) {
-        if (p_answer_function_) {
-          // Since a callback function has been registered, execute it.
-          p_answer_function_(&answer);
+        if(buffer_pointer >= data_size){
+          return;
         }
+  #ifdef DEBUG_OUTPUT
+        query.Display();
+  #endif  // DEBUG_OUTPUT
       }
-      if(buffer_pointer >= data_size){
-        return false;
+
+      for (unsigned int i_answer = 0; i_answer < (answer_count + ns_count + ar_count); i_answer++) {
+        Answer answer;
+        Parse_Answer(answer);
+        if (answer.valid) {
+          if (p_answer_function_) {
+            // Since a callback function has been registered, execute it.
+            p_answer_function_(&answer);
+          }
+        }
+        if(buffer_pointer >= data_size){
+          return;
+        }
+  #ifdef DEBUG_OUTPUT
+        answer.Display();
+  #endif  // DEBUG_OUTPUT
       }
-#ifdef DEBUG_OUTPUT
-      answer.Display();
-#endif  // DEBUG_OUTPUT
+
+  #ifdef DEBUG_RAW
+      DisplayRawPacket();
+  #endif  // DEBUG_RAW
     }
-
-#ifdef DEBUG_RAW
-    DisplayRawPacket();
-#endif  // DEBUG_RAW
-
-    return true;
-  }
-  return true;  // Not enough data for a full packet to be waiting.
 }
+
+void MDns::start() {
+  udp.listenMulticast(IPAddress(224, 0, 0, 251), MDNS_TARGET_PORT);
+  udp.onPacket([&](AsyncUDPPacket packet) {
+    onPacket(packet);
+  });
+}
+
 
 void MDns::Clear() {
   data_buffer[0] = 0;     // Query ID field which is unused in mDNS.
@@ -302,11 +303,7 @@ bool MDns::AddAnswer(const Answer& answer) {
 
 void MDns::Send() const {
   Serial.println("Sending UDP multicast packet");
-
-  Udp.begin(MDNS_SOURCE_PORT);
-  Udp.beginPacketMulticast(IPAddress(224, 0, 0, 251), MDNS_TARGET_PORT, WiFi.localIP(), MDNS_TTL);
-  Udp.write(data_buffer, data_size);
-  Udp.endPacket();
+  udp.writeTo(data_buffer, data_size, IPAddress(224, 0, 0, 251), MDNS_TARGET_PORT);
 }
 
 void MDns::Display() const {
